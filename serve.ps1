@@ -32,6 +32,9 @@ $mimeTypes = @{
     ".svg"  = "image/svg+xml"
     ".ico"  = "image/x-icon"
     ".json" = "application/json"
+    ".woff" = "font/woff"
+    ".woff2" = "font/woff2"
+    ".ttf"  = "font/ttf"
 }
 
 try {
@@ -40,32 +43,41 @@ try {
         $request = $context.Request
         $response = $context.Response
 
-        $urlPath = $request.Url.LocalPath.TrimStart('/')
-        if ([string]::IsNullOrEmpty($urlPath) -or $urlPath -eq "/") {
-            $urlPath = "index.html"
+        try {
+            $rawPath = [System.Uri]::UnescapeDataString($request.Url.AbsolutePath).TrimStart('/')
+            if ([string]::IsNullOrWhiteSpace($rawPath) -or $rawPath -eq "/") {
+                $rawPath = "index.html"
+            }
+
+            $filePath = Join-Path $baseDir ($rawPath -replace '/', '\')
+
+            if (Test-Path $filePath -PathType Leaf) {
+                $ext = [System.IO.Path]::GetExtension($filePath).ToLower()
+                $contentType = $mimeTypes[$ext]
+                if (-not $contentType) { $contentType = "application/octet-stream" }
+
+                $bytes = [System.IO.File]::ReadAllBytes($filePath)
+                $response.ContentType = $contentType
+                $response.ContentLength64 = $bytes.Length
+                $response.StatusCode = 200
+
+                if ($request.HttpMethod -ne "HEAD") {
+                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                }
+            } else {
+                $response.StatusCode = 404
+                $notFound = [System.Text.Encoding]::UTF8.GetBytes("404 Not Found")
+                $response.ContentType = "text/plain; charset=utf-8"
+                $response.ContentLength64 = $notFound.Length
+                if ($request.HttpMethod -ne "HEAD") {
+                    $response.OutputStream.Write($notFound, 0, $notFound.Length)
+                }
+            }
+        } catch {
+            # Ignore client disconnect or stream abort
+        } finally {
+            try { $response.Close() } catch {}
         }
-
-        # Normalize URL path separators
-        $urlPath = $urlPath -replace '/', '\'
-        $filePath = Join-Path $baseDir $urlPath
-
-        if (Test-Path $filePath -PathType Leaf) {
-            $ext = [System.IO.Path]::GetExtension($filePath).ToLower()
-            $contentType = $mimeTypes[$ext]
-            if (-not $contentType) { $contentType = "application/octet-stream" }
-
-            $bytes = [System.IO.File]::ReadAllBytes($filePath)
-            $response.ContentType = $contentType
-            $response.ContentLength64 = $bytes.Length
-            $response.StatusCode = 200
-            $response.OutputStream.Write($bytes, 0, $bytes.Length)
-        } else {
-            $response.StatusCode = 404
-            $notFound = [System.Text.Encoding]::UTF8.GetBytes("404 Not Found")
-            $response.ContentLength64 = $notFound.Length
-            $response.OutputStream.Write($notFound, 0, $notFound.Length)
-        }
-        $response.Close()
     }
 } finally {
     $listener.Stop()
